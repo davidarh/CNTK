@@ -436,6 +436,7 @@ public:
 
 %feature("director:except") {
     if ($error != NULL) {
+        PyErr_Print();
         throw Swig::DirectorMethodException();
     }
 }
