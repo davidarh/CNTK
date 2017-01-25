@@ -680,56 +680,103 @@ void SparseSequenceBatchValueCreationTest(size_t vocabSize, size_t maxAllowedSeq
 }
 
 template <typename ElementType>
-void CreateBatchTest(const DeviceDescriptor device, bool readOnly)
+void CreateBatchTestDense(const DeviceDescriptor device, bool readOnly)
 {
     size_t numAxes = 3;
     size_t maxDimSize = 20; 
     NDShape sampleShape = CreateShape(numAxes, maxDimSize);
+    auto sampleSize = sampleShape.TotalSize();
 
-    vector<ElementType> batch1 = {};
-    auto val1 = Value::CreateBatch(sampleShape, batch1, device, readOnly);
-    CheckValue(val1, sampleShape, { batch1 }, 0);
-
-    
-
-
-
-
-    std::vector<std::vector<ElementType>> data;
-    ValuePtr testValue;
-
-    // single sequence, single sample
-    std::vector<size_t> seqLenList = { 1 };
-    data = GenerateSequences<ElementType>(seqLenList, sampleShape);
-    testValue = Value::Create(sampleShape, data, device, readOnly);
-    CheckValue(testValue, sampleShape, data, seqLenList);
-
-    // Single sequence, multiple samples
-    seqLenList = { 2 };
-    data = GenerateSequences<ElementType>(seqLenList, sampleShape);
-    testValue = Value::Create(sampleShape, data, device, readOnly);
-    CheckValue(testValue, sampleShape, data, seqLenList);
-
-    // Batch with sequences
-
-    // Same sequence length for testing no NDMask is needed.
-    size_t seqLen = 4;
-    int testRun = 3;
-    size_t maxNumOfSequences = 60;
-    // This is only used to generate number of sequnces, so boost distribution is not needed.
-    std::default_random_engine generator;
-    std::uniform_int_distribution<size_t> distribution(1, maxNumOfSequences);
-    for (int i = 0; i < testRun; i++)
+    size_t batchCount = 1;
+    size_t maxSequenceLen = 100;
+    auto seqLenList = GenerateSequenceLengths(batchCount, maxSequenceLen);
+    // Here we miss use GenertaeSequences to create batch.
+    auto data = GenerateSequences<ElementType>(seqLenList, sampleShape);
+    auto batch2 = data[0];
+    auto testValue = Value::CreateBatch(sampleShape, batch2, device, readOnly);
+    vector<vector<ElementType>> result;
+    vector<ElementType> sample;
+    for (size_t i = 0; i < data[0].size(); i += sampleSize)
     {
-        size_t numberOfSequences = distribution(generator);
-        std::vector<size_t> seqLenListBatch(numberOfSequences, seqLen);
-
-        data = GenerateSequences<ElementType>(seqLenListBatch, sampleShape);
-        // Create the Value object based on the given data and shape.
-        testValue = Value::Create(sampleShape, data, device, readOnly);
-        // Check whether the created value matches expected shape and data.
-        CheckValue(testValue, sampleShape, data, seqLenListBatch);
+        result.push_back(vector<ElementType>(data[0].begin() + i, data[0].begin() + i + sampleSize));
     }
+    vector<size_t> resultSeqLen(data[0].size()/sampleSize, 1);
+    CheckValue(testValue, sampleShape, result, resultSeqLen);
+
+    vector<ElementType> wrongBatch(sampleSize * 2 - 1, 0);
+    VerifyException([&sampleShape, &wrongBatch, &device, &readOnly]() {
+        Value::CreateBatch(sampleShape, wrongBatch, device, readOnly);
+    }, "The expected exception has not been caugth: The number of data is not a multiple of the sample size.");
+
+    auto emptyBatch = vector<ElementType>(0);
+    VerifyException([&sampleShape, &emptyBatch, &device, &readOnly]() {
+        Value::CreateBatch(sampleShape, emptyBatch, device, readOnly);
+    }, "The expected exception has not been caugth: The number of sequences is 0");
+}
+
+template <typename ElementType>
+void CreateSequenceTestDense(const DeviceDescriptor device, bool readOnly)
+{
+    size_t numAxes = 4;
+    size_t maxDimSize = 30;
+    NDShape sampleShape = CreateShape(numAxes, maxDimSize);
+    auto sampleSize = sampleShape.TotalSize();
+
+    size_t batchCount = 1;
+    size_t maxSequenceLen = 210;
+
+    // Test without using seqStartFlag
+    auto seqLenList = GenerateSequenceLengths(batchCount, maxSequenceLen);
+    auto data = GenerateSequences<ElementType>(seqLenList, sampleShape);
+    auto seq = data[0];
+    auto testValue = Value::CreateSequence(sampleShape, seq, device, readOnly);
+    CheckValue(testValue, sampleShape, data, seqLenList);
+
+    // Test seqStartFlag is true
+    seqLenList = GenerateSequenceLengths(batchCount, maxSequenceLen);
+    data = GenerateSequences<ElementType>(seqLenList, sampleShape);
+    seq = data[0];
+    testValue = Value::CreateSequence(sampleShape, seq, true, device, readOnly);
+    CheckValue(testValue, sampleShape, data, seqLenList);
+    const MaskKind* maskData = nullptr;
+    NDMaskPtr cpuMask = nullptr;
+    if (testValue->Mask() != nullptr)
+    {
+        cpuMask = (testValue->Device().Type() != DeviceKind::CPU) ? testValue->Mask()->DeepClone(DeviceDescriptor::CPUDevice()) : testValue->Mask();
+        maskData = cpuMask->DataBuffer();
+        if (maskData[0] != MaskKind::SequenceBegin)
+        {
+            ReportFailure("The sequence start flag does not match. actual: %d, expected: Valid", maskData[0]);
+        }
+    }
+
+    // Test seqStartFlag is false
+    seqLenList = GenerateSequenceLengths(batchCount, maxSequenceLen);
+    data = GenerateSequences<ElementType>(seqLenList, sampleShape);
+    seq = data[0];
+    testValue = Value::CreateSequence(sampleShape, seq, false, device, readOnly);
+    CheckValue(testValue, sampleShape, data, seqLenList);
+    maskData = nullptr;
+    cpuMask = nullptr;
+    if (testValue->Mask() != nullptr)
+    {
+        cpuMask = (testValue->Device().Type() != DeviceKind::CPU) ? testValue->Mask()->DeepClone(DeviceDescriptor::CPUDevice()) : testValue->Mask();
+        maskData = cpuMask->DataBuffer();
+    }
+    if (maskData[0] != MaskKind::Valid)
+    {
+        ReportFailure("The sequence start flag does not match. actual: %d, expected: Valid", maskData[0]);
+    }
+
+    vector<ElementType> wrongSeq(sampleSize * 2 - 1, 0);
+    VerifyException([&sampleShape, &wrongSeq, &device, &readOnly]() {
+        Value::CreateSequence(sampleShape, wrongSeq, device, readOnly);
+    }, "The expected exception has not been caugth: The number of data is not a multiple of the sample size.");
+
+    auto emptySeq = vector<ElementType>(0);
+    VerifyException([&sampleShape, &emptySeq, &device, &readOnly]() {
+        Value::CreateSequence(sampleShape, emptySeq, device, readOnly);
+    }, "The expected exception has not been caugth: The number of sequences is 0");
 }
 
 void ValueTests()
@@ -737,7 +784,7 @@ void ValueTests()
     fprintf(stderr, "\nValueTests..\n");
     srand(1);
 
-    TestSettingParameterValuesManually(DeviceDescriptor::CPUDevice());
+    /*TestSettingParameterValuesManually(DeviceDescriptor::CPUDevice());
 
     ValueCreationNoNDMaskTest<float>(DeviceDescriptor::CPUDevice(), false);
     ValueCreationNoNDMaskTest<double>(DeviceDescriptor::CPUDevice(), true);
@@ -753,8 +800,11 @@ void ValueTests()
     ValueCopyToDenseTest<double>(DeviceDescriptor::CPUDevice());
     ValueCopyToOneHotTest<float>(DeviceDescriptor::CPUDevice());
     ValueCopyToOneHotTest<double>(DeviceDescriptor::CPUDevice());
+*/
+    CreateBatchTestDense<float>(DeviceDescriptor::CPUDevice(), false);
+    CreateSequenceTestDense<float>(DeviceDescriptor::CPUDevice(), false);
 
-    if (IsGPUAvailable())
+   /* if (IsGPUAvailable())
     {
         TestSettingParameterValuesManually(DeviceDescriptor::GPUDevice(0));
 
@@ -774,5 +824,5 @@ void ValueTests()
         ValueCopyToOneHotTest<double>(DeviceDescriptor::GPUDevice(0));
     }
 
-    ValueCopyToExceptionsTest(DeviceDescriptor::CPUDevice());
+    ValueCopyToExceptionsTest(DeviceDescriptor::CPUDevice());*/
 }
