@@ -96,7 +96,7 @@ Train = {
         
         learningRatesPerSample=0.00001*10:0.000001*5:0.0000001
         #momentumPerMB=0.9
-        momentumAsTimeConstant = 20
+        momentumAsTimeConstant = 20 # 20 == 0.778
         gradUpdateType=None
         L2RegWeight=0.0005
         dropoutRate=0.5

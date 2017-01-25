@@ -50,11 +50,11 @@ elif (use_model == "VGG"):
     roi_dim = 7
 
 # Helper to print all node names
-def print_all_node_names(model_file, is_BrainScript=True):
+def print_all_node_names(model_file, is_BrainScript=True, output_nodes_only=True):
     loaded_model = load_model(model_file)
     if is_BrainScript:
         loaded_model = combine([loaded_model.outputs[0]])
-    node_list = depth_first_search(loaded_model, lambda x: True) #x.is_output)
+    node_list = depth_first_search(loaded_model, lambda x: x.is_output or not output_nodes_only)
     print("printing node information in the format")
     print("node name (tensor shape)")
     for node in node_list:
@@ -140,7 +140,7 @@ def frcn_predictor(features, rois, num_classes):
 
 
 # Trains a Fast R-CNN network model on the grocery image dataset
-def frcn_grocery(base_path, debug_output=False):
+def frcn_grocery(base_path):
     num_channels = 3
     image_height = cntk_padHeight   # from PARAMETERS.py
     image_width = cntk_padWidth     # from PARAMETERS.py
@@ -170,10 +170,11 @@ def frcn_grocery(base_path, debug_output=False):
     pe = classification_error(frcn_output, label_input, axis=1)
 
     # Set learning parameters
-    epoch_size = 25                    # for now we manually specify epoch size
-    mb_size = 5 # 2
-    max_epochs = 20 # 17
-    momentum_time_constant = 20 # 20 # -mb_size/np.log(0.9) # 19
+    # for now we manually specify epoch size
+    epoch_size = 25 # 5011 for Pascal, 25 for Grocery
+    mb_size = 5 # was 2
+    max_epochs = 20 # was 17
+    momentum_time_constant = 10 # 20 or -mb_size/np.log(0.9) for Pascal, 10 for Grocery
     l2_reg_weight = 0.0005
 
     lr_per_sample = [0.00001] * 10 + [0.000001] * 5 + [0.0000001]
@@ -185,11 +186,8 @@ def frcn_grocery(base_path, debug_output=False):
     trainer = Trainer(frcn_output, ce, pe, learner)
 
     # Get minibatches of images to train with and perform model training
-    training_progress_output_freq = int(epoch_size / mb_size)
+    training_progress_output_freq = np.min([100, int(epoch_size / mb_size)])
     num_mbs = int(epoch_size * max_epochs / mb_size)
-
-    if debug_output:
-        training_progress_output_freq = training_progress_output_freq / 10
 
     # Main training loop
     for i in range(0, num_mbs):
@@ -214,7 +212,7 @@ def frcn_grocery(base_path, debug_output=False):
     rois_si     = test_minibatch_source[rois_stream_name]
 
     mb_size = 1
-    num_mbs = 5
+    num_mbs = 5 # 4952 for Pascal, 5 for Grocery
 
     results_file_path = base_path + "test.z"
     with open(results_file_path, 'wb') as results_file:
@@ -229,6 +227,8 @@ def frcn_grocery(base_path, debug_output=False):
             output = trainer.model.eval(arguments)
             out_values = output[0,0].flatten()
             np.savetxt(results_file, out_values[np.newaxis], fmt="%.6f")
+            if(i % 100 == 0):
+                print("Evaluated %s images.." % i)
 
     return
 
@@ -238,6 +238,12 @@ def frcn_grocery(base_path, debug_output=False):
 # set_default_device(cpu())
 
 os.chdir(cntkFilesDir)
-# print_all_node_names(model_file)
+print_all_node_names(model_file, output_nodes_only=False)
 
 frcn_grocery(cntkFilesDir)
+
+# Generate ROIs (separate)
+# Train Fast R-CNN model
+# Eval Test set
+# Eval single image
+
